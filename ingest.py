@@ -21,6 +21,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator, Tuple, List, Dict, Optional
 
+# added User Agent to let know Wikipedia that I am not a bot
+wikipedia.set_user_agent("LocalRAGProject_ITU/1.0 (kalayi22@itu.edu.tr)")
+
 
 # ============================================================================
 # CONFIGURATION
