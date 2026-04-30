@@ -213,6 +213,83 @@ def classify_query(query: str) -> str:
         return "mixed"
 
 
+def format_chat_history(chat_history: Optional[List[Dict]]) -> str:
+    """
+    Format chat history into a compact transcript for prompting.
+
+    Args:
+        chat_history: Conversation messages in
+                      [{"role": "user"/"assistant", "content": "..."}, ...] format
+
+    Returns:
+        A newline-delimited transcript string
+    """
+    if not chat_history:
+        return ""
+
+    history_lines = []
+    for msg in chat_history:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        content = msg.get("content", "")
+        if len(content) > 500:
+            content = content[:500]
+        history_lines.append(f"{role}: {content}")
+
+    return "\n".join(history_lines)
+
+
+def condense_query(query: str, chat_history: Optional[List[Dict]]) -> str:
+    """
+    Rewrite a follow-up user question into a standalone retrieval query.
+
+    Args:
+        query: User's latest question
+        chat_history: Previous conversation turns
+
+    Returns:
+        A standalone, context-rich question suitable for retrieval
+    """
+    if not chat_history:
+        return query
+
+    history_text = format_chat_history(chat_history)
+    if not history_text:
+        return query
+
+    condense_prompt = f"""Rewrite the user's latest question as a standalone question for document retrieval.
+
+Rules:
+1. Preserve the original meaning.
+2. Replace pronouns or vague references with the specific entity or topic from the conversation when possible.
+3. Keep it concise.
+4. Return ONLY the rewritten standalone question.
+5. If the latest question is already standalone, return it unchanged.
+
+Conversation:
+{history_text}
+
+Latest question: {query}
+
+Standalone question:"""
+
+    try:
+        response = ollama.generate(
+            model=LLM_MODEL,
+            prompt=condense_prompt,
+            stream=False,
+            options={
+                "temperature": 0.1,
+                "top_p": 0.9,
+            },
+        )
+
+        standalone_query = response.get("response", "").strip()
+        return standalone_query or query
+    except Exception:
+        # Fall back gracefully so retrieval still works for standalone queries.
+        return query
+
+
 # ============================================================================
 # RETRIEVAL (CHROMADB SEARCH WITH METADATA FILTERING)
 # ============================================================================
@@ -312,7 +389,7 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
 def generate_answer(
     query: str,
     context: str,
-    history_text: str = "",      # ← YENİ PARAMETRE
+    history_text: str = "",
 ) -> Tuple[str, List[Dict]]:
     """
     Generate an answer using the local LLM with retrieved context.
@@ -328,14 +405,11 @@ def generate_answer(
     if not _initialized:
         raise RuntimeError("RAG engine not initialized. Call initialize_rag_engine() first.")
 
-    # Step 1: Retrieve context
-    context_text, source_chunks = retrieve_context(query)
-
     # If no context was found, return immediately
-    if not source_chunks:
+    if not context or context == "No relevant information found in the knowledge base.":
         return "I don't know. This question is about information not in my knowledge base.", []
 
-    # Step 2: Build the prompt with strict instructions
+    # Step 1: Build the prompt with strict instructions
     system_prompt = """You are a helpful assistant answering questions about famous people and places.
 
 CRITICAL RULES:
@@ -348,7 +422,7 @@ CRITICAL RULES:
 
 You have access to the following context:"""
 
-    # Step 3: Önceki konuşma varsa prompt'a ekle
+    # Step 2: Add prior conversation when available for reference resolution.
     history_section = ""
     if history_text:
         history_section = f"""Previous conversation (for context only, do not answer based on this):
@@ -357,7 +431,7 @@ You have access to the following context:"""
 """
 
     user_prompt = f"""{history_section}Context:
-{context_text}
+{context}
 
 ---
 
@@ -365,7 +439,7 @@ Question: {query}
 
 Answer based ONLY on the context above. Use the previous conversation only to understand what pronouns like "he/she/it/they" refer to. If the information is not in the context, respond with: I don't know"""
 
-    # Step 4: Call Ollama with strict parameters
+    # Step 3: Call Ollama with strict parameters
     try:
         response = ollama.generate(
             model=LLM_MODEL,
@@ -386,14 +460,14 @@ Answer based ONLY on the context above. Use the previous conversation only to un
     except Exception as e:
         return f"Error generating response: {str(e)}", []
 
-    return answer, source_chunks
+    return answer, []
 
 
 def answer_question(
     query: str,
     include_sources: bool = False,
     include_context: bool = False,
-    chat_history: list = None,    # ← YENİ PARAMETRE
+    chat_history: list = None,
 ) -> Dict:
     """
     Complete RAG pipeline: Query → Classify → Retrieve → Generate → Answer
@@ -427,31 +501,28 @@ def answer_question(
     }
 
     try:
-        # Step 1: Classify query
-        query_type = classify_query(query)
+        # Step 1: Condense follow-up questions for retrieval
+        standalone_query = condense_query(query, chat_history) if chat_history else query
+
+        # Step 2: Classify the actual retrieval query
+        query_type = classify_query(standalone_query)
         result["query_type"] = query_type
 
-        # Step 2: Build conversation history string (if provided)
-        history_text = ""
-        if chat_history:
-            history_lines = []
-            for msg in chat_history:
-                role = "User" if msg["role"] == "user" else "Assistant"
-                # Token limitini aşmamak için uzun mesajları kısalt
-                content = msg["content"][:500] if len(msg["content"]) > 500 else msg["content"]
-                history_lines.append(f"{role}: {content}")
-            history_text = "\n".join(history_lines)
+        # Step 3: Build conversation history string for generation
+        history_text = format_chat_history(chat_history)
 
-        # Step 3: Generate answer (retrieval + generation are combined)
-        answer, sources = generate_answer(query, "", history_text=history_text)
+        # Step 4: Retrieve context using the standalone query
+        context_text, sources = retrieve_context(standalone_query)
+
+        # Step 5: Generate answer using the original user query and retrieved context
+        answer, _ = generate_answer(query, context_text, history_text=history_text)
 
         result["answer"] = answer
         result["sources"] = sources if include_sources else []
 
-        # Step 4: Optionally retrieve context for display
+        # Step 6: Optionally return the already retrieved context
         if include_context:
-            context, _ = retrieve_context(query)
-            result["context"] = context
+            result["context"] = context_text
 
     except Exception as e:
         result["error"] = f"Error processing query: {str(e)}"
