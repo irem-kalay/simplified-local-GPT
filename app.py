@@ -174,7 +174,7 @@ def render_source_chunks(sources: list, query_type: str):
     if not sources:
         return
 
-    with st.expander(f"📚 View Retrieved Context ({len(sources)} chunks)"):
+    with st.expander(f"📚 View Retrieved Context ({len(sources)} chunks)", expanded=False):
         # Show query classification
         st.markdown("### Query Classification")
         query_type_description = {
@@ -233,15 +233,20 @@ def main():
     st.divider()
 
     # Display chat history
-    for message in st.session_state.messages:
+    last_assistant_index = max(
+        (i for i, message in enumerate(st.session_state.messages) if message["role"] == "assistant"),
+        default=-1,
+    )
+
+    for i, message in enumerate(st.session_state.messages):
         role = message["role"]
         content = message["content"]
         query_type = message.get("query_type")
 
         render_chat_message(role, content, query_type)
 
-        # Show sources for assistant messages
-        if role == "assistant":
+        # Only show the latest retrieved-context window in the transcript.
+        if role == "assistant" and i == last_assistant_index:
             sources = message.get("sources", [])
             render_source_chunks(sources, query_type)
 
