@@ -217,8 +217,9 @@ local-wikipedia-rag/
 ├── debug_chroma.py         # Utility: inspect ChromaDB retrieval results
 ├── requirements.txt        # Python dependencies
 ├── README.md               # This file
-├── product_prd.md          # Product Requirements Document
-├── recommendation.md       # Production deployment recommendation
+└── documentation/ 
+    ├── product_prd.md      # Product Requirements Document
+    ├── recommendation.md   # Production deployment recommendation
 └── data/                   # Auto-created by scripts
     ├── rag_database.db     # SQLite: raw docs + chunks
     └── chroma_db/          # ChromaDB: vector index
