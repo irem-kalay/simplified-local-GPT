@@ -2,7 +2,7 @@
 Local Wikipedia RAG Assistant - RAG Engine Module
 
 This module implements the complete Retrieval-Augmented Generation (RAG) pipeline:
-1. Query classification (rule-based routing)
+1. Query classification (LLM-based routing)
 2. ChromaDB retrieval with metadata filtering
 3. LLM generation using Ollama with context grounding
 
@@ -23,79 +23,8 @@ from typing import Tuple, List, Dict, Optional
 CHROMA_DB_PATH = "data/chroma_db"
 COLLECTION_NAME = "wikipedia_entities"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-LLM_MODEL = "llama3.2:3b"  # or "mistral"
-RETRIEVAL_TOP_K = 5
-
-# Rule-based keyword mapping for query classification
-PERSON_KEYWORDS = {
-    "who",
-    "biography",
-    "born",
-    "famous",
-    "scientist",
-    "artist",
-    "athlete",
-    "author",
-    "inventor",
-    "discover",
-    "achievement",
-    "life",
-    "known for",
-    "created",
-    "wrote",
-    "painted",
-    "composed",
-    "died",
-    "year",
-    "age",
-    "founder",
-    "president",
-    "king",
-    "queen",
-    "emperor",
-    "person",
-    "people",
-    "man",
-    "woman",
-    "doctor",
-    "physicist",
-    "mathematician",
-}
-
-PLACE_KEYWORDS = {
-    "where",
-    "location",
-    "located",
-    "city",
-    "country",
-    "landmark",
-    "visit",
-    "building",
-    "structure",
-    "monument",
-    "temple",
-    "cathedral",
-    "castle",
-    "fortress",
-    "tower",
-    "bridge",
-    "mountain",
-    "river",
-    "lake",
-    "ocean",
-    "island",
-    "continent",
-    "region",
-    "place",
-    "area",
-    "site",
-    "ruins",
-    "capital",
-    "continent",
-    "geography",
-    "distance",
-    "height",
-}
+LLM_MODEL = "mistral"  # or "mistral" llama3.2:3b
+RETRIEVAL_TOP_K = 8
 
 # ============================================================================
 # GLOBAL INITIALIZATION
@@ -180,15 +109,12 @@ def initialize_rag_engine():
 
 
 # ============================================================================
-# QUERY CLASSIFICATION (RULE-BASED ROUTING)
+# QUERY CLASSIFICATION (LLM-BASED ROUTING)
 # ============================================================================
 
 def classify_query(query: str) -> str:
     """
-    Classify a user query as "person", "place", or "mixed" using keyword rules.
-    
-    This rule-based approach is transparent, fast, and requires no ML.
-    It enables Option B's type-aware retrieval.
+    Classify a user query as "person", "place", or "mixed" using the local LLM.
 
     Args:
         query: User's natural language question
@@ -196,20 +122,55 @@ def classify_query(query: str) -> str:
     Returns:
         "person", "place", or "mixed"
     """
-    query_lower = query.lower()
+    system_prompt = """You are a routing classifier for a RAG system.
 
-    # Count keyword matches
-    person_matches = sum(1 for keyword in PERSON_KEYWORDS if keyword in query_lower)
-    place_matches = sum(1 for keyword in PLACE_KEYWORDS if keyword in query_lower)
+Classify the user's question into EXACTLY ONE category:
+- person
+- place
+- mixed
 
-    # Determine query type based on keyword frequency
-    if person_matches > place_matches and person_matches > 0:
-        return "person"
-    elif place_matches > person_matches and place_matches > 0:
-        return "place"
-    else:
-        # Default to mixed for ambiguous queries
-        # (includes comparisons, combinations, etc.)
+Rules:
+1. Return only one word: person, place, or mixed.
+2. Use person for questions primarily about a person or people.
+3. Use place for questions primarily about a place, location, or landmark.
+4. Use mixed for comparisons, ambiguous questions, or questions spanning both categories.
+5. Do not explain your answer.
+6. CRITICAL: If the user explicitly asks to 'compare' two things (even if they are two people or two places), or uses the word 'vs', you MUST classify it as 'mixed'. Never classify a comparison as just person or place.
+
+Examples:
+- 'Who was Albert Einstein?' → person
+- 'What is Machu Picchu?' → place
+- 'Why is the Great Wall of China important?' → place
+- 'What did Marie Curie discover?' → person
+- 'Where is Mount Everest?' → place
+- 'Compare Einstein and Tesla' → mixed
+- 'Compare the Eiffel Tower and the Colosseum' → mixed
+- 'Which person is associated with electricity?' → person
+- 'Which famous place is located in Turkey?' → place"""
+
+    try:
+        response = ollama.generate(
+            model=LLM_MODEL,
+            prompt=query,
+            system=system_prompt,
+            stream=False,
+            options={
+                "temperature": 0.0,
+                "num_predict": 10,
+            },
+        )
+
+        classification = response.get("response", "").strip().lower()
+
+        if "person" in classification and "place" not in classification:
+            return "person"
+        if "place" in classification and "person" not in classification:
+            return "place"
+        if "mixed" in classification:
+            return "mixed"
+
+        return "mixed"
+    except Exception:
         return "mixed"
 
 
@@ -294,7 +255,7 @@ Standalone question:"""
 # RETRIEVAL (CHROMADB SEARCH WITH METADATA FILTERING)
 # ============================================================================
 
-def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, List[Dict]]:
+def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K, query_type: str = None) -> Tuple[str, List[Dict]]:
     """
     Retrieve relevant context from ChromaDB for a user query.
     
@@ -308,6 +269,7 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
     Args:
         query: User's natural language question
         top_k: Number of chunks to retrieve (default: 5)
+        query_type: Optional pre-classified query type ("person", "place", or "mixed"). If None, will be classified internally.
 
     Returns:
         Tuple of (formatted_context_string, list_of_source_chunks)
@@ -315,8 +277,9 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
     if not _initialized:
         raise RuntimeError("RAG engine not initialized. Call initialize_rag_engine() first.")
 
-    # Step 1: Classify query intent
-    query_type = classify_query(query)
+    # Step 1: Classify query intent (if not already provided)
+    if query_type is None:
+        query_type = classify_query(query)
 
     # Step 2: Embed the query using the same model as Chroma
     query_embedding = _embedding_model.encode([query])[0].tolist()
@@ -337,13 +300,37 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
             where={"entity_type": "place"},
         )
     else:  # mixed
-        # Retrieve from both types, then balance
-        results = _chroma_collection.query(
+        # Retrieve a larger pool, then balance chunks across entities.
+        raw_results = _chroma_collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k * 2,  # Get more to balance
+            n_results= 300,
         )
-        # Simple balancing: sort by entity type and trim
-        # (Chroma returns results in similarity order)
+        balanced_ids = []
+        balanced_documents = []
+        balanced_metadatas = []
+        entity_counts = {}
+
+        if not raw_results["ids"] or not raw_results["ids"][0]:
+            results = raw_results
+        else:
+            for doc_id, doc, metadata in zip(
+                raw_results["ids"][0],
+                raw_results["documents"][0],
+                raw_results["metadatas"][0],
+            ):
+                entity_name = metadata.get("entity_name", "Unknown")
+
+                if entity_counts.get(entity_name, 0) < 5 and len(balanced_ids) < top_k * 2:
+                    balanced_ids.append(doc_id)
+                    balanced_documents.append(doc)
+                    balanced_metadatas.append(metadata)
+                    entity_counts[entity_name] = entity_counts.get(entity_name, 0) + 1
+
+            results = {
+                "ids": [balanced_ids],
+                "documents": [balanced_documents],
+                "metadatas": [balanced_metadatas]
+            }
 
     # Step 4: Format results for display and context
     if not results["ids"] or not results["ids"][0]:
@@ -365,7 +352,7 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
         chunk_idx = metadata.get("chunk_index", "0")
 
         # Add to context
-        context_parts.append(f"[{entity_name} - {entity_type.upper()}]\n{doc}")
+        context_parts.append(f"[SOURCE: {entity_name} ({entity_type.upper()})]\nAll facts below belong ONLY to {entity_name}:\n{doc}")
 
         # Track source information
         source_chunks.append({
@@ -389,6 +376,7 @@ def retrieve_context(query: str, top_k: int = RETRIEVAL_TOP_K) -> Tuple[str, Lis
 def generate_answer(
     query: str,
     context: str,
+    query_type: str = "mixed",
     history_text: str = "",
 ) -> Tuple[str, List[Dict]]:
     """
@@ -397,6 +385,7 @@ def generate_answer(
     Args:
         query: User's original question
         context: Retrieved context from ChromaDB
+        query_type: Query classification used to shape the system prompt
         history_text: Formatted string of previous conversation turns
 
     Returns:
@@ -410,16 +399,21 @@ def generate_answer(
         return "I don't know. This question is about information not in my knowledge base.", []
 
     # Step 1: Build the prompt with strict instructions
-    system_prompt = """You are a helpful assistant answering questions about famous people and places.
-
+    base_prompt = """You are a factual assistant answering questions about famous people and places.
 CRITICAL RULES:
-1. Answer ONLY based on the provided context.
-2. Do NOT make up or assume information.
-3. If the context does not contain the answer, respond with EXACTLY: "I don't know"
-4. Be concise and cite specific facts from the context when possible.
-5. If the question asks about something not in the context, say "I don't know"
-6. If there is a previous conversation, use it to understand follow-up questions and pronouns like "he", "she", "it", "they".
+1. Answer using ONLY facts explicitly stated in the provided context. Never use outside knowledge.
+2. Each [SOURCE: X] block belongs exclusively to entity X. Never apply a fact from one
+   source block to a different entity.
+3. If the context does not contain a direct answer to the question, respond with exactly:
+   I don't know
+4. Do NOT add explanations, caveats, or "related" information when you don't know something.
+   Just say: I don't know
+5. Use the conversation history ONLY to resolve pronouns (he, she, it, they) — not as a
+   source of facts."""
+    
 
+    system_prompt = base_prompt
+    system_prompt += """
 You have access to the following context:"""
 
     # Step 2: Add prior conversation when available for reference resolution.
@@ -512,10 +506,15 @@ def answer_question(
         history_text = format_chat_history(chat_history)
 
         # Step 4: Retrieve context using the standalone query
-        context_text, sources = retrieve_context(standalone_query)
+        context_text, sources = retrieve_context(standalone_query, query_type=query_type)
 
         # Step 5: Generate answer using the original user query and retrieved context
-        answer, _ = generate_answer(query, context_text, history_text=history_text)
+        answer, _ = generate_answer(
+            query,
+            context_text,
+            query_type=query_type,
+            history_text=history_text,
+        )
 
         result["answer"] = answer
         result["sources"] = sources if include_sources else []
@@ -572,7 +571,7 @@ def test_retrieval(query: str) -> Dict:
         raise RuntimeError("RAG engine not initialized. Call initialize_rag_engine() first.")
 
     query_type = classify_query(query)
-    context, sources = retrieve_context(query)
+    context, sources = retrieve_context(query, query_type=query_type)
 
     return {
         "query": query,
@@ -601,10 +600,8 @@ def run_demo():
     # Sample queries
     test_queries = [
         "Who was Albert Einstein and what is he known for?",
-        "Where is the Eiffel Tower located?",
-        "Compare Lionel Messi and Cristiano Ronaldo",
-        "What is the tallest mountain in the world?",
         "Tell me about the Taj Mahal",
+        "Compare Albert Einstein and Nikola Tesla"
     ]
 
     for i, query in enumerate(test_queries, 1):
