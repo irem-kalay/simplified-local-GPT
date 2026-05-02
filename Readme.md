@@ -6,6 +6,9 @@ A fully local, ChatGPT-style question-answering system about famous people and p
 
 > 📹 [https://www.loom.com/share/ecf0342b2d83423a9790e84e82caacfd]
 
+## Github link
+>🔗 [https://github.com/irem-kalay/simplified-local-GPT.git]
+
 ---
 
 ## Table of Contents
