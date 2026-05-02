@@ -133,7 +133,7 @@ def render_sidebar():
         st.markdown(
             """
             - **Embeddings:** all-MiniLM-L6-v2 (384-dim)
-            - **LLM:** Llama 3.2 3b (via Ollama)
+            - **LLM:** Mistral (via Ollama)
             - **Vector DB:** Chroma (SQLite backend)
             - **Knowledge Base:** Wikipedia (40 entities)
             """
