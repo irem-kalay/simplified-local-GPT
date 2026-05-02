@@ -76,7 +76,7 @@ PLACES = [
     "Big Ben",
     "Angkor Wat",
     "Petra",
-    "Christ the Redeemer",
+    "Sirmione",
     "Stonehenge",
     "Venice",
     "Acropolis",
