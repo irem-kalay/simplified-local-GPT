@@ -2,6 +2,10 @@
 
 A fully local, ChatGPT-style question-answering system about famous people and places, built with Wikipedia data, local embeddings, ChromaDB, and Ollama. No external LLM APIs are used — everything runs on your machine.
 
+## Demo link
+
+> 📹 [https://www.loom.com/share/ecf0342b2d83423a9790e84e82caacfd]
+
 ---
 
 ## Table of Contents
@@ -259,7 +263,3 @@ LLM output is streamed token-by-token using Ollama's stream API. The UI renders 
 Each response displays two timing measurements: retrieval time (embedding + ChromaDB search) and generation time (LLM). This makes it easy to identify where latency is coming from and evaluate the impact of caching.
 
 ---
-
-## Demo
-
-> 📹 []
