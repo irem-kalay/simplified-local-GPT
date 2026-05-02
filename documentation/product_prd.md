@@ -1,197 +1,190 @@
 # Product Requirements Document (PRD)
 ## Local Wikipedia RAG Assistant
 
-**Version:** 1.0  
-**Course:** BLG483E — Homework 3  
-**Date:** 2025
-
 ---
 
 ## 1. Product Overview
 
-The Local Wikipedia RAG Assistant is a fully offline, ChatGPT-style question-answering system that answers factual questions about famous people and famous places. The system uses Retrieval-Augmented Generation (RAG): it retrieves relevant text from a locally stored Wikipedia knowledge base and feeds it as context to a local language model to generate grounded answers.
+The Local Wikipedia RAG Assistant is a fully local, ChatGPT-style question-answering system about famous people and places. It ingests Wikipedia articles, stores them in a local vector database, and uses a local language model to generate grounded answers — entirely without external APIs or network calls at inference time.
 
-The product operates entirely on the user's machine. No external LLM API, cloud service, or internet connection is required after the initial data ingestion.
-
----
-
-## 2. Problem Statement
-
-General-purpose language models hallucinate facts about real people and places because their weights encode approximate, possibly outdated information. Providing a grounded, factual QA experience requires anchoring generation to verified source documents. At the same time, privacy-conscious users and institutions often cannot or will not send queries to cloud APIs.
-
-This product solves both problems: it grounds answers in real Wikipedia content and runs 100% locally.
+**Core Value Proposition:**
+- Privacy-first: all data, embeddings, and LLM inference stay on the user's machine
+- No API costs or rate limits
+- Transparent retrieval with source chunk visibility
+- Reproducible and auditable knowledge base
 
 ---
 
-## 3. Goals and Non-Goals
+## 2. Goals and Non-Goals
 
 ### Goals
-- Ingest Wikipedia articles for at least 20 famous people and 20 famous places
-- Split documents into manageable chunks without external NLP libraries
-- Generate local embeddings and store them in a persistent vector database
-- Classify user queries and retrieve relevant chunks via metadata-filtered semantic search
-- Generate grounded answers using a local language model
-- Provide a user-friendly chat interface with source chunk transparency
+- Answer natural language questions about 40 famous people and places
+- Retrieve relevant context using semantic (vector) search
+- Generate answers grounded strictly in retrieved Wikipedia context
 - Support multi-turn conversations with chat history memory
+- Provide a clean Streamlit chat UI with source chunk viewer
 
 ### Non-Goals
-- Real-time Wikipedia updates (the knowledge base is a snapshot)
-- Support for arbitrary Wikipedia topics beyond the 40 ingested entities
-- Streaming token generation in the UI
-- Multi-user or server deployment (this is a single-user local tool)
-- External API calls of any kind during query time
+- General-purpose Q&A beyond the ingested knowledge base
+- Real-time or live Wikipedia updates after ingestion
+- Multi-user or cloud deployment (single-user localhost only)
+- Languages other than English
+- Structured data queries (tables, statistics)
 
 ---
 
-## 4. User Stories
+## 3. User Stories
 
-| As a... | I want to... | So that... |
-|---|---|---|
-| Student | Ask about a famous scientist | I can get a quick factual summary |
-| User | Compare two athletes | I can see factual differences side by side |
-| User | Ask follow-up questions | The system understands what "he" or "she" refers to |
-| User | See which source chunks were used | I can verify the answer myself |
-| User | Clear the conversation | I can start fresh without restarting the app |
-| Developer | Run the entire system locally | No API keys or cloud accounts are needed |
-
----
-
-## 5. System Architecture
-
-### 5.1 Pipeline Overview
-
-```
-[Wikipedia API]
-      │
-      ▼
-[ingest.py]  ──────────────────────── SQLite (raw_documents + chunks)
-                                              │
-                                              ▼
-[embed_and_store.py] ─────────────── ChromaDB (vector index)
-                                              │
-                                        ┌─────┘
-                                        ▼
-[app.py] → [rag_engine.py]
-   │            ├── condense_query()       (chat history rewrite)
-   │            ├── classify_query()       (LLM-based routing)
-   │            ├── retrieve_context()     (ChromaDB + metadata filter)
-   │            └── generate_answer()      (Ollama LLM)
-   │
-   ▼
-Streamlit Chat UI
-```
-
-### 5.2 Component Responsibilities
-
-| Component | File | Responsibility |
-|---|---|---|
-| Ingestion | `ingest.py` | Fetch Wikipedia, chunk text, store in SQLite |
-| Embedding | `embed_and_store.py` | Generate embeddings, populate ChromaDB |
-| RAG Engine | `rag_engine.py` | Classify, retrieve, generate |
-| UI | `app.py` | Chat interface, session state, source display |
+| ID | As a user, I want to… | So that… |
+|----|----------------------|----------|
+| U1 | Ask who a famous person is | I can learn about them quickly |
+| U2 | Ask where a famous place is located | I get a grounded, factual answer |
+| U3 | Compare two people | I understand similarities and differences |
+| U4 | Compare two places | I understand what sets them apart |
+| U5 | Ask a mixed query spanning both categories | The system handles cross-category questions |
+| U6 | See the source chunks behind an answer | I can verify where the information came from |
+| U7 | Clear chat history | I can start a fresh conversation |
+| U8 | Ask a follow-up question using pronouns | The system resolves references correctly |
+| U9 | Ask about something not in the database | The system says "I don't know" instead of hallucinating |
 
 ---
 
-## 6. Data Model
+## 4. Functional Requirements
 
-### SQLite — `raw_documents` table
+### 4.1 Data Ingestion
+- **FR-1:** The system SHALL ingest Wikipedia pages for at least 20 people and 20 places (40 entities minimum).
+- **FR-2:** The system SHALL include all entities specified in the project brief (e.g., Albert Einstein, Eiffel Tower).
+- **FR-3:** The system SHALL split documents into overlapping chunks using only Python built-in modules (`re`, `str.split()`). Third-party chunking libraries (LangChain, NLTK, LlamaIndex) are not permitted.
+- **FR-4:** Chunk size SHALL be approximately 512 tokens with a 128-token overlap to preserve cross-sentence context.
+- **FR-5:** Raw documents and chunks SHALL be persisted in a local SQLite database with separate `raw_documents` and `chunks` tables.
+- **FR-6:** Ingestion SHALL include rate limiting (2 second delay per Wikipedia request) and retry logic (up to 3 attempts) to handle API errors gracefully.
+
+### 4.2 Embedding and Vector Storage
+- **FR-7:** Embeddings SHALL be generated locally using `sentence-transformers` (model: `all-MiniLM-L6-v2`). No external embedding API is permitted.
+- **FR-8:** Embeddings SHALL be stored in a persistent ChromaDB vector database using cosine similarity.
+- **FR-9:** Each stored chunk SHALL carry metadata: `entity_name`, `entity_type` (person/place), `chunk_index`, `token_count`, `document_id`.
+- **FR-10:** The system SHALL use Option B: a single ChromaDB collection with metadata-based filtering (not separate collections per entity type).
+
+### 4.3 Retrieval
+- **FR-11:** Given a user query, the system SHALL classify it as "person", "place", or "mixed" using the local LLM at zero temperature.
+- **FR-12:** The system SHALL apply `entity_type` metadata filtering in ChromaDB based on the classification result.
+- **FR-13:** For "mixed" or comparison queries, the system SHALL retrieve chunks from both person and place namespaces and merge them into a single context.
+- **FR-14:** The system SHALL retrieve the top-K most relevant chunks (default K=8).
+
+### 4.4 Chat History and Query Condensation
+- **FR-15:** The system SHALL maintain conversation history across turns within a session.
+- **FR-16:** For follow-up questions, the system SHALL use `condense_query()` to rewrite the question into a standalone query before retrieval, so that pronouns and references resolve correctly.
+
+### 4.5 Generation
+- **FR-17:** The system SHALL use a local LLM via Ollama (Mistral) for answer generation.
+- **FR-18:** Generated answers SHALL be grounded in retrieved context. The LLM SHALL be instructed not to use external knowledge.
+- **FR-19:** If the answer cannot be found in retrieved context, the system SHALL respond with "I don't know."
+- **FR-20:** The system SHALL stream the LLM response token-by-token to the UI.
+
+### 4.6 Chat Interface
+- **FR-21:** The system SHALL provide a Streamlit-based chat UI.
+- **FR-22:** The UI SHALL display chat history across the session.
+- **FR-23:** The UI SHALL allow users to clear chat history.
+- **FR-24:** The UI SHALL display retrieved source chunks in a collapsible expander.
+- **FR-25:** The UI SHALL show query classification type and latency metrics (search time, generation time) below each response.
+- **FR-26:** The system SHALL cache responses in memory; identical queries within a session SHALL return instantly without re-running the pipeline.
+
+---
+
+## 5. Non-Functional Requirements
+
+| ID | Requirement |
+|----|-------------|
+| NFR-1 | The system SHALL run entirely on localhost with no external API calls at inference time |
+| NFR-2 | Ingestion of 40 entities SHALL complete within 5 minutes (rate-limited at 2s/request) |
+| NFR-3 | Retrieval (embedding + vector search) SHALL complete in under 2 seconds on a modern laptop CPU |
+| NFR-4 | The system SHALL handle Wikipedia disambiguation errors and page-not-found errors without crashing |
+| NFR-5 | The Chroma database SHALL persist across application restarts |
+| NFR-6 | The system SHALL run on Python 3.10 or higher on macOS, Linux, or Windows |
+
+---
+
+## 6. Vector Store Design Decision: Option B
+
+The system implements **Option B: a single ChromaDB collection with metadata filtering**, as opposed to Option A (two separate collections).
+
+**Rationale:**
+
+| Factor | Option A (Two Collections) | Option B (Single Collection + Metadata) ✅ |
+|--------|---------------------------|------------------------------------------|
+| Codebase complexity | Higher — two clients, two indices | Lower — one client, one index |
+| Mixed / comparison queries | Requires two separate queries and manual merging | Single query with no filter, or two filtered sub-queries in one function |
+| Maintenance | Double the index management | Single index to manage, back up, and rebuild |
+| Query routing flexibility | Must pick a collection before querying | Metadata filter applied at query time — more flexible |
+| Extensibility | Adding a third category requires a new collection | Adding a new category only requires a new metadata value |
+
+**Conclusion:** Option B results in simpler code, better support for mixed queries, and easier extensibility. The slight added complexity of metadata filtering is negligible given ChromaDB's native support for `where` clauses.
+
+---
+
+## 7. Data Model
+
+### SQLite: `raw_documents`
 | Column | Type | Description |
-|---|---|---|
+|--------|------|-------------|
 | id | TEXT (UUID) | Primary key |
-| entity_name | TEXT | E.g. "Albert Einstein" |
+| entity_name | TEXT | Human-readable name (e.g., "Albert Einstein") |
 | entity_type | TEXT | "person" or "place" |
 | source_url | TEXT | Wikipedia URL |
 | content | TEXT | Full article text |
-| word_count | INTEGER | Approximate word count |
+| word_count | INTEGER | Word count |
 | ingestion_date | TIMESTAMP | When the record was created |
 
-### SQLite — `chunks` table
+### SQLite: `chunks`
 | Column | Type | Description |
-|---|---|---|
+|--------|------|-------------|
 | id | TEXT (UUID) | Primary key |
 | document_id | TEXT | Foreign key to raw_documents |
-| chunk_index | INTEGER | Position within document |
-| entity_name | TEXT | Denormalized for fast access |
-| entity_type | TEXT | "person" or "place" |
+| chunk_index | INTEGER | Chunk position within the document |
+| entity_name | TEXT | Denormalized for fast lookup |
+| entity_type | TEXT | Denormalized for fast lookup |
 | content | TEXT | Chunk text |
 | token_count | INTEGER | Approximate token count |
+| created_at | TIMESTAMP | When the chunk was created |
 
-### ChromaDB — `wikipedia_entities` collection
+### ChromaDB Collection: `wikipedia_entities`
 | Field | Description |
-|---|---|
+|-------|-------------|
 | id | `{entity_name}_{chunk_index}_{uuid8}` |
-| embedding | 384-dimensional float vector |
+| embedding | 384-dimensional float vector (all-MiniLM-L6-v2) |
 | document | Chunk text |
-| metadata | `entity_type`, `entity_name`, `chunk_index`, `token_count`, `document_id` |
+| metadata.entity_type | "person" or "place" |
+| metadata.entity_name | Entity name |
+| metadata.chunk_index | Chunk position |
+| metadata.token_count | Token count |
+| metadata.document_id | Link to SQLite raw_documents |
 
 ---
 
-## 7. Chunking Strategy
+## 8. System Architecture
 
-**Method:** Sentence-boundary chunking with token overlap  
-**Implementation:** Native Python `re.split()` and `str.split()` only — no NLTK, LangChain, or LlamaIndex  
-**Chunk size:** 512 tokens (approximate, word-based)  
-**Overlap:** 128 tokens
-
-**Rationale:**  
-Fixed-size word-based chunks provide predictable context window usage. Sentence-boundary splitting prevents mid-sentence cuts, which degrade embedding quality. Overlap ensures that facts spanning adjacent sentences are not lost at chunk boundaries. The 512/128 configuration was chosen to comfortably fit within the embedding model's 256-token optimal window while preserving enough context for meaningful retrieval.
-
----
-
-## 8. Vector Store Design — Option B
-
-The system uses **Option B: a single ChromaDB collection with metadata filtering**.
-
-### Choice: Option B over Option A
-
-| Criterion | Option A (two collections) | Option B (one collection + metadata) |
-|---|---|---|
-| Codebase complexity | Higher — two client handles, two query paths | Lower — one collection, filter via `where=` |
-| Mixed/comparison queries | Hard — requires merging two result sets | Native — query once, filter by type or skip filter |
-| Scalability | Adding entity types requires new collections | Adding a type only requires a new metadata value |
-| Retrieval consistency | Scores are not cross-comparable across collections | All scores come from one cosine space |
-
-**Decision:** Option B provides cleaner code, better support for comparison queries, and easier extensibility. The metadata overhead is negligible.
+```
+User Query (Streamlit UI)
+        │
+        ▼
+[condense_query()]         ← rewrites follow-up questions using chat history
+        │
+        ▼
+[classify_query()]         → "person" | "place" | "mixed"   (Mistral, temp=0)
+        │
+        ▼
+[retrieve_context()]       ← ChromaDB cosine search + entity_type metadata filter
+        │
+        ▼
+[generate_answer_stream()] ← Mistral via Ollama, context-grounded, streamed
+        │
+        ▼
+Streamlit Chat UI          ← displays streamed tokens, source chunks, latency
+```
 
 ---
 
-## 9. Query Classification
-
-User queries are classified into one of three categories:
-
-| Category | Trigger | Retrieval action |
-|---|---|---|
-| `person` | Question about a person | Filter: `entity_type = "person"` |
-| `place` | Question about a location | Filter: `entity_type = "place"` |
-| `mixed` | Comparison or ambiguous | No filter; balanced retrieval across entities |
-
-Classification is performed by the local LLM (`classify_query()` in `rag_engine.py`) using a zero-temperature system prompt with explicit few-shot examples. Comparisons (`"Compare X and Y"`, `"vs"`) are always routed to `mixed`.
-
-For mixed queries, up to 5 chunks per entity are selected from a pool of 300 candidates to ensure balanced representation across both subjects of a comparison.
-
----
-
-## 10. Chat History Memory
-
-Multi-turn conversations are supported via two mechanisms:
-
-1. **Query condensation:** `condense_query()` rewrites follow-up questions (e.g., "What else did he discover?") into standalone queries (e.g., "What else did Albert Einstein discover?") before embedding and retrieval.
-
-2. **Prompt injection:** The last 6 messages (3 turns) of conversation history are injected into the generation prompt as read-only reference, allowing the LLM to resolve pronouns without treating history as a source of facts.
-
----
-
-## 11. Anti-Hallucination Measures
-
-The generation prompt enforces:
-- Answer only from `[SOURCE: X]` blocks in context
-- Facts from one source block must not be applied to a different entity
-- If the answer is not in the context: respond with exactly `"I don't know"`
-- Temperature set to 0.3 for near-deterministic output
-
----
-
-## 12. Entities Ingested
+## 9. Entities Ingested
 
 ### People (20)
 Albert Einstein, Marie Curie, Leonardo da Vinci, William Shakespeare, Ada Lovelace, Nikola Tesla, Lionel Messi, Cristiano Ronaldo, Taylor Swift, Frida Kahlo, Steve Jobs, Oprah Winfrey, Martin Luther King Jr., Cleopatra, Isaac Newton, Stephen Hawking, Elon Musk, Serena Williams, Pablo Picasso, Jane Goodall
@@ -201,26 +194,10 @@ Eiffel Tower, Great Wall of China, Taj Mahal, Grand Canyon, Machu Picchu, Coloss
 
 ---
 
-## 13. Technology Stack
+## 10. Known Limitations
 
-| Layer | Technology | Justification |
-|---|---|---|
-| Language | Python 3.10+ | Wide library support, readable syntax |
-| Wikipedia fetch | `wikipedia` library | Simple API; handles disambiguation |
-| Text chunking | `re`, `str.split()` | Native Python; satisfies no-library constraint |
-| Embedding model | `all-MiniLM-L6-v2` (sentence-transformers) | ~30 MB, 384-dim, fast CPU inference |
-| Vector DB | ChromaDB (persistent, SQLite backend) | Fully local, metadata filtering, cosine similarity |
-| Raw data store | SQLite | Zero-dependency, lightweight, relational |
-| Language model | Mistral via Ollama | Strong instruction following, runs on consumer hardware |
-| UI | Streamlit | Rapid prototyping; native chat components |
-
----
-
-## 14. Known Limitations
-
-- **Fixed knowledge base:** Answers reflect Wikipedia content at ingestion time. Articles are not updated automatically.
-- **40-entity scope:** The system only has information about the ingested entities. Queries about other people or places will correctly return "I don't know".
-- **Disambiguation sensitivity:** Wikipedia disambiguation pages may occasionally resolve to the wrong article. A 3-attempt retry with fallback search is implemented to mitigate this.
-- **LLM quality ceiling:** Answer quality is bounded by the local model (Mistral 7B). The model may still occasionally hallucinate despite strict prompting.
-- **No streaming:** Responses are returned as a complete block. Latency may be noticeable on slower hardware.
-- **Single-user:** There is no authentication, session isolation, or concurrent user support.
+- The knowledge base is static — it reflects Wikipedia at ingestion time and does not update automatically.
+- Chunking is word-based (approximate tokens), not true BPE-token-based, so chunk sizes may vary slightly.
+- Query classification uses an LLM call, which adds ~0.5–2 seconds of latency per query.
+- The "I don't know" guardrail relies on LLM instruction-following; it is not a hard-coded filter and may occasionally fail on edge cases.
+- The system handles 40 entities. Scaling to thousands of entities would require re-evaluation of the chunking, retrieval, and indexing strategy.

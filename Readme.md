@@ -29,7 +29,11 @@ This system ingests Wikipedia pages for **20 famous people** and **20 famous pla
 - ✅ Retrieval-Augmented Generation (RAG) with metadata-filtered retrieval
 - ✅ LLM-based query classification (person / place / mixed)
 - ✅ Chat history memory for multi-turn conversations
-- ✅ Streamlit chat interface with source chunk viewer
+- ✅ Follow-up question condensation (pronoun resolution across turns)
+- ✅ Streaming responses — answer appears token-by-token in real time
+- ✅ In-memory response cache — repeated queries return instantly (⚡ Cache Hit)
+- ✅ Per-query latency metrics — search time and generation time shown in the UI
+- ✅ Streamlit chat interface with collapsible source chunk viewer
 
 ---
 
@@ -39,19 +43,22 @@ This system ingests Wikipedia pages for **20 famous people** and **20 famous pla
 User Query
     │
     ▼
-[Query Condensation]  ← chat history rewrite for follow-up questions
+[Response Cache Check]  ← returns instantly if query was seen before
+    │
+    ▼
+[Query Condensation]    ← rewrites follow-up questions into standalone queries
     │
     ▼
 [Query Classification]  → "person" | "place" | "mixed"
     │
     ▼
-[ChromaDB Retrieval]   ← metadata-filtered vector search (Option B)
+[ChromaDB Retrieval]    ← metadata-filtered vector search (Option B)
     │
     ▼
-[Ollama LLM Generation]  ← context-grounded answer (Mistral)
+[Ollama LLM Generation] ← context-grounded answer, streamed token-by-token
     │
     ▼
-Streamlit Chat UI
+Streamlit Chat UI       ← displays answer, query type, latency, source chunks
 ```
 
 **Storage stack:**
@@ -61,6 +68,7 @@ Streamlit Chat UI
 | Vector embeddings | ChromaDB (`data/chroma_db/`) |
 | Embedding model | `all-MiniLM-L6-v2` (sentence-transformers, local) |
 | Language model | Mistral via Ollama (local) |
+| Response cache | In-memory Python dict (session-scoped) |
 | UI | Streamlit |
 
 ---
@@ -210,16 +218,16 @@ Tell me about John Doe               → "I don't know"
 
 ```
 local-wikipedia-rag/
-├── app.py                  # Streamlit chat interface
-├── rag_engine.py           # RAG pipeline (classify → retrieve → generate)
+├── app.py                  # Streamlit chat interface (streaming, cache, latency UI)
+├── rag_engine.py           # RAG pipeline (classify → retrieve → generate → cache)
 ├── ingest.py               # Wikipedia fetch + chunk + SQLite storage
 ├── embed_and_store.py      # Embedding generation + ChromaDB storage
 ├── debug_chroma.py         # Utility: inspect ChromaDB retrieval results
 ├── requirements.txt        # Python dependencies
 ├── README.md               # This file
-└── documentation/ 
-    ├── product_prd.md      # Product Requirements Document
-    ├── recommendation.md   # Production deployment recommendation
+├── documentation/
+│   ├── product_prd.md      # Product Requirements Document
+│   └── recommendation.md  # Production deployment recommendation
 └── data/                   # Auto-created by scripts
     ├── rag_database.db     # SQLite: raw docs + chunks
     └── chroma_db/          # ChromaDB: vector index
@@ -229,14 +237,29 @@ local-wikipedia-rag/
 
 ## Design Decisions
 
-**Option B — Single collection with metadata filtering:**  
+**Option B — Single collection with metadata filtering:**
 One ChromaDB collection stores all entities. Each chunk carries `entity_type` (`person`/`place`) and `entity_name` metadata. At query time, the query is classified and the correct metadata filter is applied. This keeps the codebase simple while still enabling type-aware retrieval. See `product_prd.md` for the full rationale.
 
-**Native chunking:**  
-Text splitting uses only Python's built-in `re` module and `str.split()` — no NLTK, LangChain, or LlamaIndex.
+**Native chunking:**
+Text splitting uses only Python's built-in `re` module and `str.split()` — no NLTK, LangChain, or LlamaIndex. Chunks are ~512 tokens with a 128-token overlap at sentence boundaries.
 
-**LLM-based query classification:**  
-`classify_query()` in `rag_engine.py` uses the local LLM with a zero-temperature system prompt to route queries to the correct retrieval path.
+**LLM-based query classification:**
+`classify_query()` in `rag_engine.py` calls the local LLM with a zero-temperature system prompt to route queries to the correct retrieval path. Comparison queries (e.g., "Compare X and Y") are always routed to `mixed`, which retrieves from both person and place namespaces.
 
-**Chat history memory:**  
-`condense_query()` rewrites follow-up questions into standalone queries before retrieval, so pronouns and references resolve correctly across turns.
+**Chat history memory and query condensation:**
+`condense_query()` rewrites follow-up questions into standalone queries before retrieval, so pronouns and implicit references (e.g., "What else did he discover?") resolve correctly across turns. Only the last 3 turns (6 messages) of history are sent to keep prompts concise.
+
+**Streaming responses:**
+LLM output is streamed token-by-token using Ollama's stream API. The UI renders each token as it arrives, giving the appearance of a live typing effect. This significantly reduces perceived latency compared to waiting for the full response.
+
+**In-memory response cache:**
+`rag_engine.py` maintains a session-scoped Python dict (`_response_cache`) keyed by the lowercased query string. Both the raw user query and the condensed standalone query are stored as keys so that follow-up rephrasing of the same question also benefits from the cache. Cache hits are shown in the UI as ⚡ Cache Hit with 0.00s latency.
+
+**Per-query latency metrics:**
+Each response displays two timing measurements: retrieval time (embedding + ChromaDB search) and generation time (LLM). This makes it easy to identify where latency is coming from and evaluate the impact of caching.
+
+---
+
+## Demo
+
+> 📹 []

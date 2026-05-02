@@ -315,9 +315,9 @@ def chunk_text(
         if len(tokens) + len(sentence_tokens) > chunk_size:
             # Yield current chunk if we have tokens
             if tokens:
-                chunk_text = " ".join(tokens[chunk_start:])
+                chunk_text_str = " ".join(tokens[chunk_start:])
                 chunk_token_count = len(tokens) - chunk_start
-                yield chunk_text, chunk_token_count
+                yield chunk_text_str, chunk_token_count
 
                 # Move chunk_start back by overlap amount for next chunk
                 chunk_start = max(0, len(tokens) - overlap)
@@ -330,9 +330,9 @@ def chunk_text(
 
     # Step 3: Yield final chunk if there are remaining tokens
     if tokens:
-        chunk_text = " ".join(tokens[chunk_start:])
+        chunk_text_str = " ".join(tokens[chunk_start:])
         chunk_token_count = len(tokens) - chunk_start
-        yield chunk_text, chunk_token_count
+        yield chunk_text_str, chunk_token_count
 
 
 # ============================================================================
